@@ -4,117 +4,365 @@ import numpy as np
 
 
 class Renderer():
-    def __init__(self, screen_width=50, screen_height=50, terminal_correction=0.5, d_screen=20):
+    def __init__(self, screen_width=None, screen_height=None, terminal_correction=0.5, object_size=5, d_object=5, object_type="torus", d_screen=None):
         self.screen_width = screen_width
         self.screen_height = screen_height
+        self.fixed_screen_size = (screen_height is not None or screen_width is not None)
+
         self.terminal_correction = terminal_correction
-        self.d_screen = d_screen    # Distance from screen
-
-        self.object_types = ["circle"]
-
-        # Empty screen
-        self.screen_pixels = np.full((screen_height, screen_width), fill_value=" ")
-
-        # Fill depth buffer with infinity so that all points are closer and are accepted, and with the overlap counter.
-        self.depth_buffer = np.full((screen_height, screen_width), np.inf)
-
-        # All generated points
         self.points = None
 
+        self.set_object(object_size, d_object, object_type)
 
+        self.fit_object_to_fov = (d_screen is None)
+        self.d_screen = d_screen
+        
+        self.render_luminance = True   # False: even lighting, no shadows.
+
+        self.update_screen()
+        self.generate_buffers()
+
+        if self.fit_object_to_fov:
+            self.d_screen = self.compute_d_screen()
+
+        self.prev_height = None
+        self.prev_width = None
+
+        self.luminance_chars = ".,-~:;=!*#$@"
+
+
+    def disk_function(self, R, TH):
+        X = R * np.cos(TH)
+        Y = R * np.sin(TH)
+        Z = np.zeros_like(X)  # flat disk in XY plane
+        return X, Y, Z
+
+
+    def torus_function(self, TH, PH):
+        R1 = self.object_size
+        R2 = 2 * R1
+        X = (R2 + R1*np.cos(TH)) * np.cos(PH)
+        Y = R1 * np.sin(TH)
+        Z = -(R2 + R1*np.cos(TH)) * np.sin(PH)
+        return X, Y, Z
     
-    def generate_circle_points(self):
-        radius = 5
-        z = 10
-        num_points = 100
-        radii = np.linspace(0, radius, num_points)
-        thetas = np.linspace(0, 2*np.pi, num_points)
-        radius_points = []  # start empty
-        for r in radii:
-            points = np.stack([
-                r * np.cos(thetas),
-                r * np.sin(thetas),
-                np.full(num_points, z)
-            ], axis=1)
-            radius_points.append(points)  # Store cirle array
-        # Combine all circles into a single array
-        self.points = np.vstack(radius_points)
-        return self.points
+
+    def plane_function(self, XS, YS):
+        X = XS
+        Y = YS
+        Z = np.zeros_like(X)
+        return X, Y, Z
+        
+
+    def tetrahedron_function(self, XS, YS, ZS):
+        a, b, c, d = self.tetrahedron_verticies()
+
+        P = np.stack([XS.ravel(), YS.ravel(), ZS.ravel()], axis=1)
+
+        mask = self.points_on_tetrahedron_surface(P, a, b, c, d)
+
+        P_surface = P[mask]
+        X = P_surface[:,0]
+        Y = P_surface[:,1]
+        Z = P_surface[:,2]
+        return X, Y, Z
+        
+
+    def points_on_tetrahedron_surface(self, P, a, b, c, d):
+        margin = 1e-3
+        bary = self.barycentric_coordinates(P, a, b, c, d)
+
+        inside = np.all(bary >= -margin, axis=1) & np.all(bary <= 1 + margin, axis=1)
+        on_surface = np.any(np.abs(bary) < margin, axis=1)
+
+        return inside & on_surface
+
+
+    def barycentric_coordinates(self, P, a, b, c, d):
+        M = np.column_stack([a - d, b - d, c - d])
+        b = (P - d).T
+        solution = np.linalg.solve(M, b).T
+        ALPHAS = solution[:, 0]
+        BETAS  = solution[:, 1]
+        GAMMAS = solution[:, 2]
+        DELTAS = 1 - (ALPHAS + BETAS + GAMMAS)        
+        return np.stack([ALPHAS, BETAS, GAMMAS, DELTAS], axis=1)    
+
+
+    def tetrahedron_verticies(self):
+        a = np.array([1, 1, 1], dtype=float)
+        b = np.array([-1, -1, 1], dtype=float)
+        c = np.array([-1, 1, -1], dtype=float)
+        d = np.array([1, -1, -1], dtype=float)
+        scale = self.object_size / np.sqrt(3)
+        return scale*a, scale*b, scale*c, scale*d
+
+
+    def tetrahedron_face_normals(self, a, b, c, d):
+        faces  = np.array([
+            [a, b, d], 
+            [a, c, d], 
+            [a, b, c], 
+            [b, c, d]
+        ])
+
+        P = faces[:,0]
+        Q = faces[:,1]
+        R = faces[:,2]
+
+        U = Q - P
+        V = R - P
+        normals = np.cross(U, V)
+        normals /= np.linalg.norm(normals, axis=1, keepdims=True)
+
+        # Make normal outward facing
+        tetrahedron_centroid = (a + b + c + d)/4
+        faces_centroids = np.mean(faces, axis=1)
+
+        direction = faces_centroids - tetrahedron_centroid
+        dot_products = np.sum(normals * direction, axis=1)
+        flip = dot_products < 0
+        normals[flip] *= -1
+
+
+        return normals
+    
+
+    def tetrahedron_normals(self, P):
+        a, b, c, d = self.tetrahedron_verticies()
+        face_normals = self.tetrahedron_face_normals(a, b, c, d)
+
+        bary = self.barycentric_coordinates(P, a, b, c, d)
+        normals = np.zeros_like(P)
+
+        for i in range(4):
+            mask = np.abs(bary[:, i]) < 1e-3
+            normals[mask] = face_normals[i]
+
+        return normals
+
+
+    def generate_meshgrid(self, shape_type, num_u=100, num_v=100):
+        if shape_type == "disk":
+            radii = np.linspace(0, self.object_size, num_u)
+            angles = np.linspace(0, 2*np.pi, num_v)
+            R, TH = np.meshgrid(radii, angles)
+            X, Y, Z = self.disk_function(R, TH)
+            u, v = radii, angles
+
+        elif shape_type == "torus":
+            thetas = np.linspace(0, 2*np.pi, num_u)
+            phis = np.linspace(0, 2*np.pi, num_v)
+            TH, PH = np.meshgrid(thetas, phis)
+            X, Y, Z = self.torus_function(TH, PH)
+            u, v = thetas, phis
+
+        elif shape_type == "plane":
+            xs = np.linspace(0, self.object_size, num_u)
+            ys = np.linspace(0, self.object_size, num_v)
+            XS, YS = np.meshgrid(xs, ys)
+            X, Y, Z = self.plane_function(XS, YS)
+            u, v = xs, ys
+
+        elif shape_type == "tetrahedron":
+            num=152
+            xs = np.linspace(-self.object_size, self.object_size, num)
+            ys = np.linspace(-self.object_size, self.object_size, num)
+            zs = np.linspace(-self.object_size, self.object_size, num)
+
+            XS, YS, ZS = np.meshgrid(xs, ys, zs)
+            X, Y, Z = self.tetrahedron_function(XS, YS, ZS)
+            u, v = None, None
+
+        else:
+            raise ValueError("Unsupported shape type")
+
+        self.points = np.stack([X.flatten(), Y.flatten(), Z.flatten()], axis=1)
+        return X, Y, Z, u, v, self.points
+    
+
+    def calculate_normal_vector(self, X, Y, Z, u, v):
+        du = u[1] - u[0]
+        dv = v[1] - v[0]
+
+        dX_du, dX_dv = np.gradient(X, du, dv, edge_order=2)
+        dY_du, dY_dv = np.gradient(Y, du, dv, edge_order=2)
+        dZ_du, dZ_dv = np.gradient(Z, du, dv, edge_order=2)
+
+        tangent_u = np.stack([
+            dX_du.flatten(), 
+            dY_du.flatten(), 
+            dZ_du.flatten()
+        ], axis=1)
+        tangent_v = np.stack([
+            dX_dv.flatten(), 
+            dY_dv.flatten(), 
+            dZ_dv.flatten()
+        ], axis=1)
+
+        normals = np.cross(tangent_u, tangent_v)
+        norms = np.linalg.norm(normals, axis=1, keepdims=True)
+        norms[norms == 0] = 1.0
+        normals /= norms
+
+        return normals
+
+    def calculate_luminance_val(self, normals):
+        light_vector = np.array([0, 1, -1]).astype(float)
+        light_vector /= np.linalg.norm(light_vector)
+
+        luminance_values = np.dot(normals, light_vector)
+        luminance_values = np.clip(luminance_values, 0, 1)
+        return luminance_values
+
+
+    def generate_buffers(self):
+        # Empty screen
+        self.frame_buffer = np.full((self.screen_height, self.screen_width), fill_value=" ")
+        # Fill depth buffer with infinity so that all points are closer and are accepted, and with the overlap counter.
+        self.z_buffer = np.full((self.screen_height, self.screen_width), fill_value=np.inf)
+
+
+    def update_screen(self):
+        print("\033[H", end="", flush=True) # Cursor to home
+        if not self.fixed_screen_size:
+            terminal_dimensions = os.get_terminal_size()
+            new_width = terminal_dimensions.columns
+            new_height = terminal_dimensions.lines - 1  # Take into account the prompt line (-1).
+
+            if (new_width != self.screen_width or new_height != self.screen_height):
+                self.screen_width = new_width
+                self.screen_height = new_height
+                print("\033[2J", end="", flush=True)    # Clear terminal
+                self.generate_buffers()
+                if self.fit_object_to_fov:
+                    self.d_screen = self.compute_d_screen()
+
+
+    def set_object(self, object_size, d_object, object_type):
+        shape_functions = {
+            "disk": self.disk_function,
+            "torus": self.torus_function,
+            "plane": self.plane_function,
+            "tetrahedron": self.tetrahedron_function
+        }
+        if object_type not in shape_functions:
+            raise ValueError(f"Invalid object type: {object_type}")
+        self.shape_function = shape_functions[object_type]
+        self.object_type = object_type
+        self.object_size = object_size
+        self.d_object = d_object        
+
+
+    def compute_d_screen(self):
+        # Compute screen distance to fit object in view
+        half_w = self.screen_width / 2
+        half_h = (self.screen_height / 2) / self.terminal_correction
+        max_radius_on_screen = min(half_w, half_h)
+
+        # Determine max object radius
+        if self.object_type.lower() == "disk":
+            r_max = self.object_size
+        elif self.object_type.lower() == "torus":
+            R1 = self.object_size
+            R2 = 2 * R1
+            r_max = R2 + R1  # outer radius
+        else:
+            r_max = self.object_size
+
+        return max_radius_on_screen * self.d_object / (r_max*1.3)
+
+
+    def map_to_char(self, val, chars):
+        val = np.clip(val, 0.0, 1.0)
+        idx = int(val * (len(chars)))
+        idx = min(idx, len(chars) - 1)
+        return chars[idx]
 
 
     def draw_object(self):
-        self.screen_pixels[:] = " "
-        self.depth_buffer[:] = np.inf
-
-        for x, y, z in self.points:
-            # Point is inside camera plane
-            if z == 0:
+        for point_index, (x, y, z) in enumerate(self.points):
+            # Ignore point if it is inside the camera plane
+            if z + self.d_object == 0:
                 continue
 
             # Perspective projection
-            x_proj = (self.d_screen * x) / z
-            y_proj = (self.d_screen * y) / z
+            x_proj = (self.d_screen * x) / (z + self.d_object)
+            y_proj = (self.d_screen * y) / (z + self.d_object)
 
             # Map to screen coordinates
-            row = int((self.screen_height // 2 - y_proj)*self.terminal_correction)
-            col = int(self.screen_width  // 2 + x_proj)
+            row = int(self.screen_height / 2 - y_proj * self.terminal_correction)
+            col = int(self.screen_width  / 2 + x_proj)  
 
             if 0 <= row < self.screen_height and 0 <= col < self.screen_width:
-                if z < self.depth_buffer[row, col]:
-                    self.depth_buffer[row, col] = z
-                    self.screen_pixels[row, col] = "@"
+                if z < self.z_buffer[row, col]:
+                    self.z_buffer[row, col] = z
+                    if self.render_luminance:
+                        point_luminance = self.luminance_values[point_index]
+                        point_character = self.map_to_char(point_luminance, self.luminance_chars)
+                        self.frame_buffer[row, col] = point_character
+                    else:
+                        self.frame_buffer[row, col] = "@"
 
-        for row in self.screen_pixels:
+        for row in self.frame_buffer:
             print("".join(row))
 
+        self.frame_buffer[:] = " "
+        self.z_buffer[:] = np.inf
 
 
-    def rotate_object(self, x_axis=True, y_axis=False, z_axis=False, angle_increment = np.pi/20):
-        sin_phi = np.sin(angle_increment)
-        cos_phi = np.cos(angle_increment)
+    def rotate_object(self, object, x_axis=True, y_axis=True, z_axis=True, angle_increment = np.pi/40):
+        ax = angle_increment if x_axis else 0
+        ay = angle_increment if y_axis else 0
+        az = angle_increment if z_axis else 0
 
-        if x_axis:
-            Rx = np.array([[1, 0, 0], [0, cos_phi, -sin_phi], [0, sin_phi, cos_phi]])
-            self.points = (Rx @ self.points.T).T
-
-            #for i, point in enumerate(self.points):
-                #self.points[i] = Rx @ point
-
-        if y_axis:
-            Ry = np.array([[cos_phi, 0, sin_phi], [0, 1, 0], [-sin_phi, 0, cos_phi]])
-            self.points = (Ry @ self.points.T).T
-
-
-        if z_axis:
-            Rz = np.array([[cos_phi, -sin_phi, 0], [sin_phi, cos_phi, 0], [0, 0, 1]])  
-            self.points = (Rz @ self.points.T).T
-
+        if self.object_type == "tetrahedron":   # Avoids dominant axis illusion.
+            ax, ay, az = angle_increment * -0.7, angle_increment * -1.1, angle_increment * 1.3
+        
+        Rx = np.array([
+            [1, 0, 0],
+            [0, np.cos(ax), -np.sin(ax)],
+            [0, np.sin(ax),  np.cos(ax)]
+        ])
+        Ry = np.array([
+            [ np.cos(ay), 0, np.sin(ay)],
+            [0, 1, 0],
+            [-np.sin(ay), 0, np.cos(ay)]
+        ])
+        Rz = np.array([
+            [np.cos(az), -np.sin(az), 0],
+            [np.sin(az),  np.cos(az), 0],
+            [0, 0, 1]
+        ])
+        return (Rz @ Ry @ Rx @ object.T).T
 
 
     def render_animation(self):
-        self.generate_circle_points()
-        while True:
-            os.system("cls" if os.name=="nt" else "clear")  # clear terminal
-            self.draw_object()
-            self.rotate_object(x_axis=False, y_axis=False, z_axis=False)
-            time.sleep(0.05)
+        X, Y, Z, u, v, self.points = self.generate_meshgrid(self.object_type, num_u=100, num_v=200)
+        
+        if self.object_type == "tetrahedron":
+            self.normals = self.tetrahedron_normals(self.points)
+        else:
+            self.normals = self.calculate_normal_vector(X, Y, Z, u, v)
 
+        self.luminance_values = self.calculate_luminance_val(self.normals)
+
+        while True:
+            self.update_screen()
+            self.draw_object()
+            self.points = self.rotate_object(self.points)
+            self.normals = self.rotate_object(self.normals)
+            if self.render_luminance:
+                self.luminance_values = self.calculate_luminance_val(self.normals)
+            time.sleep(0.01)
 
 
 if __name__ == "__main__":
-    renderer = Renderer()
-    renderer.render_animation()
-
-    
-
-
-
-
-
-
-
-
-
-
-
-
+    renderer = Renderer(terminal_correction=0.5, object_size=1, object_type="torus")
+    try:
+        print("\033[?25l", end="", flush=True)  # hide cursor
+        renderer.render_animation()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        print("\033[?25h", end="", flush=True)  # show cursor
