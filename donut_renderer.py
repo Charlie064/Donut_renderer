@@ -3,39 +3,65 @@ import time
 import numpy as np
 
 
-class Renderer():
-    def __init__(self, screen_width=None, screen_height=None, terminal_correction=0.5, object_size=5, d_object=5, object_type="torus", d_screen=None):
-        self.screen_width = screen_width
-        self.screen_height = screen_height
-        self.fixed_screen_size = (screen_height is not None or screen_width is not None)
-
-        self.terminal_correction = terminal_correction
+class Object3D:
+    def __init__(self, object_size, d_object):
+        self.object_size = object_size
+        self.d_object = d_object
         self.points = None
+        self.object_type = None
 
-        self.set_object(object_size, d_object, object_type)
 
-        self.fit_object_to_fov = (d_screen is None)
-        self.d_screen = d_screen
+    def get_normals(self):
+        X, Y, Z, u, v = self._param_data
+        return self.generate_normals(X, Y, Z, u, v)
+    
+
+    def generate_normals(self, X, Y, Z, u, v):
+        du = u[1] - u[0]
+        dv = v[1] - v[0]
+
+        dX_du, dX_dv = np.gradient(X, du, dv, edge_order=2)
+        dY_du, dY_dv = np.gradient(Y, du, dv, edge_order=2)
+        dZ_du, dZ_dv = np.gradient(Z, du, dv, edge_order=2)
+
+        tangent_u = np.stack([
+            dX_du.flatten(), 
+            dY_du.flatten(), 
+            dZ_du.flatten()
+        ], axis=1)
+        tangent_v = np.stack([
+            dX_dv.flatten(), 
+            dY_dv.flatten(), 
+            dZ_dv.flatten()
+        ], axis=1)
+
+        normals = np.cross(tangent_u, tangent_v)
+        norms = np.linalg.norm(normals, axis=1, keepdims=True)
+        norms[norms == 0] = 1.0
+        normals /= norms
+
+        return normals
+
+
+
+class Torus(Object3D):
+    def __init__(self, object_size, d_object):
+        super().__init__(object_size, d_object)
+        self.object_type = "torus"
+    
+
+    def generate_meshgrid(self, num_u, num_v):
+        thetas = np.linspace(0, 2*np.pi, num_u)
+        phis = np.linspace(0, 2*np.pi, num_v)
+        TH, PH = np.meshgrid(thetas, phis)
+
+        X, Y, Z = self.torus_function(TH, PH)
+        u, v = thetas, phis
+        self._param_data = X, Y, Z, u, v
+
+        self.points = np.stack([X.flatten(), Y.flatten(), Z.flatten()], axis=1)
         
-        self.render_luminance = True   # False: even lighting, no shadows.
-
-        self.update_screen()
-        self.generate_buffers()
-
-        if self.fit_object_to_fov:
-            self.d_screen = self.compute_d_screen()
-
-        self.prev_height = None
-        self.prev_width = None
-
-        self.luminance_chars = ".,-~:;=!*#$@"
-
-
-    def disk_function(self, R, TH):
-        X = R * np.cos(TH)
-        Y = R * np.sin(TH)
-        Z = np.zeros_like(X)  # flat disk in XY plane
-        return X, Y, Z
+        return self.points
 
 
     def torus_function(self, TH, PH):
@@ -47,12 +73,30 @@ class Renderer():
         return X, Y, Z
     
 
-    def plane_function(self, XS, YS):
-        X = XS
-        Y = YS
-        Z = np.zeros_like(X)
-        return X, Y, Z
+
+class Tetrahedron(Object3D):
+    def __init__(self, object_size, d_object):
+        super().__init__(object_size, d_object)
+        self.object_type = "tetrahedron"
+
+
+    def get_normals(self):
+        return self.tetrahedron_normals(self.points)
+
+
+    def generate_meshgrid(self, num_u=None, num_v=None):
+        grid_resolution = 152
+        xs = np.linspace(-self.object_size, self.object_size, grid_resolution)
+        ys = np.linspace(-self.object_size, self.object_size, grid_resolution)
+        zs = np.linspace(-self.object_size, self.object_size, grid_resolution)
+
+        XS, YS, ZS = np.meshgrid(xs, ys, zs)
+        X, Y, Z = self.tetrahedron_function(XS, YS, ZS)
+
+        self.points = np.stack([X.flatten(), Y.flatten(), Z.flatten()], axis=1)
         
+        return self.points
+
 
     def tetrahedron_function(self, XS, YS, ZS):
         a, b, c, d = self.tetrahedron_verticies()
@@ -100,10 +144,10 @@ class Renderer():
 
     def tetrahedron_face_normals(self, a, b, c, d):
         faces  = np.array([
-            [a, b, d], 
-            [a, c, d], 
-            [a, b, c], 
-            [b, c, d]
+            [b, c, d],  # opposite a
+            [a, c, d],  # opposite b
+            [a, b, d],  # opposite c
+            [a, b, c],  # opposite d
         ])
 
         P = faces[:,0]
@@ -124,7 +168,6 @@ class Renderer():
         flip = dot_products < 0
         normals[flip] *= -1
 
-
         return normals
     
 
@@ -138,74 +181,99 @@ class Renderer():
         for i in range(4):
             mask = np.abs(bary[:, i]) < 1e-3
             normals[mask] = face_normals[i]
-
         return normals
-
-
-    def generate_meshgrid(self, shape_type, num_u=100, num_v=100):
-        if shape_type == "disk":
-            radii = np.linspace(0, self.object_size, num_u)
-            angles = np.linspace(0, 2*np.pi, num_v)
-            R, TH = np.meshgrid(radii, angles)
-            X, Y, Z = self.disk_function(R, TH)
-            u, v = radii, angles
-
-        elif shape_type == "torus":
-            thetas = np.linspace(0, 2*np.pi, num_u)
-            phis = np.linspace(0, 2*np.pi, num_v)
-            TH, PH = np.meshgrid(thetas, phis)
-            X, Y, Z = self.torus_function(TH, PH)
-            u, v = thetas, phis
-
-        elif shape_type == "plane":
-            xs = np.linspace(0, self.object_size, num_u)
-            ys = np.linspace(0, self.object_size, num_v)
-            XS, YS = np.meshgrid(xs, ys)
-            X, Y, Z = self.plane_function(XS, YS)
-            u, v = xs, ys
-
-        elif shape_type == "tetrahedron":
-            num=152
-            xs = np.linspace(-self.object_size, self.object_size, num)
-            ys = np.linspace(-self.object_size, self.object_size, num)
-            zs = np.linspace(-self.object_size, self.object_size, num)
-
-            XS, YS, ZS = np.meshgrid(xs, ys, zs)
-            X, Y, Z = self.tetrahedron_function(XS, YS, ZS)
-            u, v = None, None
-
-        else:
-            raise ValueError("Unsupported shape type")
-
-        self.points = np.stack([X.flatten(), Y.flatten(), Z.flatten()], axis=1)
-        return X, Y, Z, u, v, self.points
     
 
-    def calculate_normal_vector(self, X, Y, Z, u, v):
-        du = u[1] - u[0]
-        dv = v[1] - v[0]
 
-        dX_du, dX_dv = np.gradient(X, du, dv, edge_order=2)
-        dY_du, dY_dv = np.gradient(Y, du, dv, edge_order=2)
-        dZ_du, dZ_dv = np.gradient(Z, du, dv, edge_order=2)
+class Disk(Object3D):
+    def __init__(self, object_size, d_object):
+        super().__init__(object_size, d_object)
+        self.object_type = "disk"
 
-        tangent_u = np.stack([
-            dX_du.flatten(), 
-            dY_du.flatten(), 
-            dZ_du.flatten()
-        ], axis=1)
-        tangent_v = np.stack([
-            dX_dv.flatten(), 
-            dY_dv.flatten(), 
-            dZ_dv.flatten()
-        ], axis=1)
 
-        normals = np.cross(tangent_u, tangent_v)
-        norms = np.linalg.norm(normals, axis=1, keepdims=True)
-        norms[norms == 0] = 1.0
-        normals /= norms
+    def generate_meshgrid(self, num_u=100, num_v=100):
+        radii = np.linspace(0, self.object_size, num_u)
+        angles = np.linspace(0, 2*np.pi, num_v)
+        R, TH = np.meshgrid(radii, angles)
+        X, Y, Z = self.disk_function(R, TH)
+        u, v = radii, angles
+        self._param_data = X, Y, Z, u, v
+        
+        self.points = np.stack([X.flatten(), Y.flatten(), Z.flatten()], axis=1)
+        
+        return self.points
 
-        return normals
+    
+    def disk_function(self, R, TH):
+        X = R * np.cos(TH)
+        Y = R * np.sin(TH)
+        Z = np.zeros_like(X)  # flat disk in XY plane
+        return X, Y, Z
+    
+
+class Plane(Object3D):
+    def __init__(self, object_size, d_object):
+        super().__init__(object_size, d_object)
+        self.object_type = "plane"
+    
+
+    def generate_meshgrid(self, num_u=100, num_v=100):            
+        xs = np.linspace(-self.object_size, self.object_size, num_u)
+        ys = np.linspace(-self.object_size, self.object_size, num_v)
+        XS, YS = np.meshgrid(xs, ys)
+        X, Y, Z = self.plane_function(XS, YS)
+        u, v = xs, ys
+        self._param_data = X, Y, Z, u, v
+        
+        self.points = np.stack([X.flatten(), Y.flatten(), Z.flatten()], axis=1)
+        
+        return self.points
+    
+
+    def plane_function(self, XS, YS):
+        X = XS
+        Y = YS
+        Z = np.zeros_like(X)
+        return X, Y, Z
+        
+
+
+
+class Renderer():
+    def __init__(self, screen_width=None, screen_height=None, terminal_correction=0.5, object_size=5, d_object=5, object_type="torus", d_screen=None):
+        if object_type == "torus":
+            self.object = Torus(object_size, d_object)
+        elif object_type == "disk":
+            self.object = Disk(object_size, d_object)
+        elif object_type == "plane":
+            self.object = Plane(object_size, d_object)
+        elif object_type == "tetrahedron":
+            self.object = Tetrahedron(object_size, d_object)
+        else:
+            raise ValueError("Unknown object type")
+
+        self.screen_width = screen_width
+        self.screen_height = screen_height
+        self.fixed_screen_size = (screen_height is not None or screen_width is not None)
+
+        self.terminal_correction = terminal_correction
+
+        self.fit_object_to_fov = (d_screen is None)
+        self.d_screen = d_screen
+        
+        self.render_luminance = True   # False: even lighting, no shadows.
+
+        self.update_screen()
+        self.generate_buffers()
+
+        if self.fit_object_to_fov:
+            self.d_screen = self.compute_d_screen()
+
+        self.prev_height = None
+        self.prev_width = None
+
+        self.luminance_chars = ".,-~:;=!*#$@"
+
 
     def calculate_luminance_val(self, normals):
         light_vector = np.array([0, 1, -1]).astype(float)
@@ -214,6 +282,13 @@ class Renderer():
         luminance_values = np.dot(normals, light_vector)
         luminance_values = np.clip(luminance_values, 0, 1)
         return luminance_values
+    
+
+    def map_to_char(self, val, chars):
+        val = np.clip(val, 0.0, 1.0)
+        idx = int(val * (len(chars)))
+        idx = min(idx, len(chars) - 1)
+        return chars[idx]
 
 
     def generate_buffers(self):
@@ -236,22 +311,7 @@ class Renderer():
                 print("\033[2J", end="", flush=True)    # Clear terminal
                 self.generate_buffers()
                 if self.fit_object_to_fov:
-                    self.d_screen = self.compute_d_screen()
-
-
-    def set_object(self, object_size, d_object, object_type):
-        shape_functions = {
-            "disk": self.disk_function,
-            "torus": self.torus_function,
-            "plane": self.plane_function,
-            "tetrahedron": self.tetrahedron_function
-        }
-        if object_type not in shape_functions:
-            raise ValueError(f"Invalid object type: {object_type}")
-        self.shape_function = shape_functions[object_type]
-        self.object_type = object_type
-        self.object_size = object_size
-        self.d_object = d_object        
+                    self.d_screen = self.compute_d_screen()     
 
 
     def compute_d_screen(self):
@@ -260,35 +320,31 @@ class Renderer():
         half_h = (self.screen_height / 2) / self.terminal_correction
         max_radius_on_screen = min(half_w, half_h)
 
+        obj = self.object
+
         # Determine max object radius
-        if self.object_type.lower() == "disk":
-            r_max = self.object_size
-        elif self.object_type.lower() == "torus":
-            R1 = self.object_size
+        if obj.object_type == "disk":
+            r_max = obj.object_size
+        elif obj.object_type == "torus":
+            R1 = obj.object_size
             R2 = 2 * R1
-            r_max = R2 + R1  # outer radius
+            r_max = R2 + R1 # Outer radius
         else:
-            r_max = self.object_size
+            r_max = obj.object_size
 
-        return max_radius_on_screen * self.d_object / (r_max*1.3)
-
-
-    def map_to_char(self, val, chars):
-        val = np.clip(val, 0.0, 1.0)
-        idx = int(val * (len(chars)))
-        idx = min(idx, len(chars) - 1)
-        return chars[idx]
+        return max_radius_on_screen * obj.d_object / (r_max*1.3)
 
 
     def draw_object(self):
         for point_index, (x, y, z) in enumerate(self.points):
+            obj = self.object
             # Ignore point if it is inside the camera plane
-            if z + self.d_object == 0:
+            if z + obj.d_object == 0:
                 continue
 
             # Perspective projection
-            x_proj = (self.d_screen * x) / (z + self.d_object)
-            y_proj = (self.d_screen * y) / (z + self.d_object)
+            x_proj = (self.d_screen * x) / (z + obj.d_object)
+            y_proj = (self.d_screen * y) / (z + obj.d_object)
 
             # Map to screen coordinates
             row = int(self.screen_height / 2 - y_proj * self.terminal_correction)
@@ -311,13 +367,13 @@ class Renderer():
         self.z_buffer[:] = np.inf
 
 
-    def rotate_object(self, object, x_axis=True, y_axis=True, z_axis=True, angle_increment = np.pi/40):
+    def rotate_object(self, vectors, x_axis=True, y_axis=True, z_axis=True, angle_increment = np.pi/40):
+
+        # Set angular velocity
         ax = angle_increment if x_axis else 0
         ay = angle_increment if y_axis else 0
         az = angle_increment if z_axis else 0
 
-        if self.object_type == "tetrahedron":   # Avoids dominant axis illusion.
-            ax, ay, az = angle_increment * -0.7, angle_increment * -1.1, angle_increment * 1.3
         
         Rx = np.array([
             [1, 0, 0],
@@ -334,31 +390,36 @@ class Renderer():
             [np.sin(az),  np.cos(az), 0],
             [0, 0, 1]
         ])
-        return (Rz @ Ry @ Rx @ object.T).T
+        return (Rz @ Ry @ Rx @ vectors.T).T
 
 
     def render_animation(self):
-        X, Y, Z, u, v, self.points = self.generate_meshgrid(self.object_type, num_u=100, num_v=200)
-        
-        if self.object_type == "tetrahedron":
-            self.normals = self.tetrahedron_normals(self.points)
-        else:
-            self.normals = self.calculate_normal_vector(X, Y, Z, u, v)
-
+        self.points = self.object.generate_meshgrid(num_u=100, num_v=200)
+        self.normals = self.object.get_normals()
         self.luminance_values = self.calculate_luminance_val(self.normals)
+
+
+        # Rotate tetrahedron to nicer starting position.
+        if self.object.object_type == "tetrahedron":
+            self.points = self.rotate_object(vectors=self.points, x_axis=True, y_axis=True, z_axis=True, angle_increment=np.pi/3)
+            self.normals = self.rotate_object(vectors=self.normals, x_axis=True, y_axis=True, z_axis=True, angle_increment=np.pi/3)
+
 
         while True:
             self.update_screen()
             self.draw_object()
+
+            # Must rotate both points and normals.
             self.points = self.rotate_object(self.points)
             self.normals = self.rotate_object(self.normals)
+
             if self.render_luminance:
                 self.luminance_values = self.calculate_luminance_val(self.normals)
             time.sleep(0.01)
 
 
 if __name__ == "__main__":
-    renderer = Renderer(terminal_correction=0.5, object_size=1, object_type="torus")
+    renderer = Renderer(terminal_correction=0.5, object_size=1, object_type="tetrahedron")
     try:
         print("\033[?25l", end="", flush=True)  # hide cursor
         renderer.render_animation()
