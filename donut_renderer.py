@@ -273,7 +273,16 @@ class Renderer():
         self.prev_width = None
 
         self.luminance_chars = ".,-~:;=!*#$@"
-
+        self.colours = {
+            "black":   "\033[30m",
+            "red":     "\033[31m",
+            "green":   "\033[32m",
+            "yellow":  "\033[33m",
+            "blue":    "\033[34m",
+            "magenta": "\033[35m",
+            "cyan":    "\033[36m",
+            "white":   "\033[37m",
+        }
 
     def calculate_luminance_val(self, normals):
         light_vector = np.array([0, 1, -1]).astype(float)
@@ -293,7 +302,7 @@ class Renderer():
 
     def generate_buffers(self):
         # Empty screen
-        self.frame_buffer = np.full((self.screen_height, self.screen_width), fill_value=" ")
+        self.frame_buffer = np.full((self.screen_height, self.screen_width), fill_value=" ", dtype=object)
         # Fill depth buffer with infinity so that all points are closer and are accepted, and with the overlap counter.
         self.z_buffer = np.full((self.screen_height, self.screen_width), fill_value=np.inf)
 
@@ -335,7 +344,10 @@ class Renderer():
         return max_radius_on_screen * obj.d_object / (r_max*1.3)
 
 
-    def draw_object(self):
+    def draw_object(self, colour):
+        if colour not in self.colours:
+            raise ValueError("Unknown colour")
+
         for point_index, (x, y, z) in enumerate(self.points):
             obj = self.object
             # Ignore point if it is inside the camera plane
@@ -356,7 +368,7 @@ class Renderer():
                     if self.render_luminance:
                         point_luminance = self.luminance_values[point_index]
                         point_character = self.map_to_char(point_luminance, self.luminance_chars)
-                        self.frame_buffer[row, col] = point_character
+                        self.frame_buffer[row, col] = self.colours[colour] + point_character + "\033[0m"
                     else:
                         self.frame_buffer[row, col] = "@"
 
@@ -393,7 +405,7 @@ class Renderer():
         return (Rz @ Ry @ Rx @ vectors.T).T
 
 
-    def render_animation(self):
+    def render_animation(self, colour="white"):
         self.points = self.object.generate_meshgrid(num_u=100, num_v=200)
         self.normals = self.object.get_normals()
         self.luminance_values = self.calculate_luminance_val(self.normals)
@@ -407,7 +419,7 @@ class Renderer():
 
         while True:
             self.update_screen()
-            self.draw_object()
+            self.draw_object(colour)
 
             # Must rotate both points and normals.
             self.points = self.rotate_object(self.points)
@@ -419,10 +431,10 @@ class Renderer():
 
 
 if __name__ == "__main__":
-    renderer = Renderer(terminal_correction=0.5, object_size=1, object_type="tetrahedron")
+    renderer = Renderer(terminal_correction=0.5, object_size=1, object_type="torus")
     try:
         print("\033[?25l", end="", flush=True)  # hide cursor
-        renderer.render_animation()
+        renderer.render_animation(colour="green")
     except KeyboardInterrupt:
         pass
     finally:
