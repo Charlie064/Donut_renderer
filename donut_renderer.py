@@ -12,7 +12,7 @@ class Object3D:
 
 
     def get_normals(self):
-        X, Y, Z, u, v = self._param_data
+        X, Y, Z, u, v, _, _ = self._param_data
         return self.generate_normals(X, Y, Z, u, v)
     
 
@@ -56,8 +56,7 @@ class Torus(Object3D):
         TH, PH = np.meshgrid(thetas, phis)
 
         X, Y, Z = self.torus_function(TH, PH)
-        u, v = thetas, phis
-        self._param_data = X, Y, Z, u, v
+        self._param_data = X, Y, Z, thetas, phis, TH, PH
 
         self.points = np.stack([X.flatten(), Y.flatten(), Z.flatten()], axis=1)
         
@@ -72,6 +71,49 @@ class Torus(Object3D):
         Z = -(R2 + R1*np.cos(TH)) * np.sin(PH)
         return X, Y, Z
     
+
+    def get_fun_point_colours(self, selected_funny):
+        TH, PH = self._param_data[5:7]
+
+        if selected_funny == "funny_donut":
+            mask = (TH <= np.pi)
+            
+            COLOURS = np.empty(TH.shape, dtype=object)
+            COLOURS[mask] = "yellow"
+            COLOURS[~mask] = "magenta"
+            return COLOURS.flatten()
+        
+        elif selected_funny == "rainbow":
+            # Rainbow donut
+            colours = np.array(["red", "yellow", "green", "cyan", "blue", "magenta"], dtype=object)
+            num_slices = 10
+
+            COLOURS = np.empty(PH.shape, dtype=object)
+            pie_cut_angles = np.linspace(0, 2*np.pi, num=num_slices + 1)
+
+            for cut_i in range(len(pie_cut_angles) - 1):
+                mask = (PH >= pie_cut_angles[cut_i]) & (PH <= pie_cut_angles[cut_i + 1])
+                COLOURS[mask] = colours[cut_i % len(colours)]
+            return COLOURS.flatten()
+        
+        elif selected_funny == "lifebuoy":
+            colours = np.array(["white", "red"], dtype=object)
+
+            COLOURS = np.empty(PH.shape, dtype=object)
+            pie_cut_angles = np.array(
+                [0, np.pi/8, 
+                 np.pi/2, np.pi/2 + np.pi/8,
+                 np.pi, np.pi + np.pi/8, 
+                 3*np.pi/2, 3*np.pi/2 + np.pi/8,
+                 2*np.pi])
+
+            for cut_i in range(len(pie_cut_angles) - 1):
+                mask = (PH >= pie_cut_angles[cut_i]) & (PH <= pie_cut_angles[cut_i + 1])
+                COLOURS[mask] = colours[cut_i % len(colours)]
+            return COLOURS.flatten()  
+         
+        else:
+            raise ValueError(f"Selected funny is not funny: {selected_funny}")
 
 
 class Tetrahedron(Object3D):
@@ -143,6 +185,7 @@ class Tetrahedron(Object3D):
 
 
     def tetrahedron_face_normals(self, a, b, c, d):
+        # This order is used for indexing the normals.
         faces  = np.array([
             [b, c, d],  # opposite a
             [a, c, d],  # opposite b
@@ -172,17 +215,47 @@ class Tetrahedron(Object3D):
     
 
     def tetrahedron_normals(self, P):
+        """
+        Goes through all face normals one at a time, 
+        assign all point that are on the face with the face normal.
+        """
         a, b, c, d = self.tetrahedron_verticies()
         face_normals = self.tetrahedron_face_normals(a, b, c, d)
 
         bary = self.barycentric_coordinates(P, a, b, c, d)
-        normals = np.zeros_like(P)
+        normals = np.zeros_like(P)  # Each point gets a normal.
 
         for i in range(4):
-            mask = np.abs(bary[:, i]) < 1e-3
-            normals[mask] = face_normals[i]
+            """When ith coordinate in bary coords (alfa, beta, gamma or delta) is ≈ 0 
+            then the point has the ith normal in face_normals."""
+            mask = np.abs(bary[:, i]) < 1e-3    # Find which points have coord[i] = 0
+
+            # Assign the correct face normal to all normals selected by mask
+            normals[mask] = face_normals[i]  
+
         return normals
     
+
+    def get_fun_point_colours(self, selected_funny):
+        if selected_funny == "rainbow":
+            P = self.points
+            a, b, c, d = self.tetrahedron_verticies()
+            face_colours = np.array(["magenta", "green", "cyan", "red"])
+
+            bary = self.barycentric_coordinates(P, a, b, c, d)
+            points_colour = np.empty(len(P), dtype=object)
+
+            for i in range(4):
+                """When ith coordinate in bary coords (alfa, beta, gamma or delta) is ≈ 0 
+                then the point has the ith normal in face_normals."""
+                mask = np.abs(bary[:, i]) < 1e-3    # Find which points have coord[i] = 0
+
+                # Assign the correct face normal to all normals selected by mask
+                points_colour[mask] = face_colours[i]  
+
+            return points_colour
+        else:
+            raise ValueError(f"Selected funny is not funny: {selected_funny}")
 
 
 class Disk(Object3D):
@@ -196,8 +269,7 @@ class Disk(Object3D):
         angles = np.linspace(0, 2*np.pi, num_v)
         R, TH = np.meshgrid(radii, angles)
         X, Y, Z = self.disk_function(R, TH)
-        u, v = radii, angles
-        self._param_data = X, Y, Z, u, v
+        self._param_data = X, Y, Z, radii, angles, R, TH 
         
         self.points = np.stack([X.flatten(), Y.flatten(), Z.flatten()], axis=1)
         
@@ -211,6 +283,24 @@ class Disk(Object3D):
         return X, Y, Z
     
 
+    def get_fun_point_colours(self, selected_funny):
+        if selected_funny == "rainbow":
+            colours = np.array(["red", "yellow", "green", "cyan", "blue", "magenta"], dtype=object)
+            num_slices = 10
+            
+            R, TH = self._param_data[5:7]
+            COLOURS = np.empty(TH.shape, dtype=object)
+            pie_cut_angles = np.linspace(0, 2*np.pi, num=num_slices + 1)
+
+            for cut_i in range(len(pie_cut_angles) - 1):
+                mask = (TH >= pie_cut_angles[cut_i]) & (TH <= pie_cut_angles[cut_i + 1])
+                COLOURS[mask] = colours[cut_i % len(colours)]
+            return COLOURS.flatten()
+        else:
+            raise ValueError(f"Selected funny is not funny: {selected_funny}")
+    
+
+
 class Plane(Object3D):
     def __init__(self, object_size, d_object):
         super().__init__(object_size, d_object)
@@ -222,8 +312,7 @@ class Plane(Object3D):
         ys = np.linspace(-self.object_size, self.object_size, num_v)
         XS, YS = np.meshgrid(xs, ys)
         X, Y, Z = self.plane_function(XS, YS)
-        u, v = xs, ys
-        self._param_data = X, Y, Z, u, v
+        self._param_data = X, Y, Z, xs, ys, XS, YS
         
         self.points = np.stack([X.flatten(), Y.flatten(), Z.flatten()], axis=1)
         
@@ -235,12 +324,32 @@ class Plane(Object3D):
         Y = YS
         Z = np.zeros_like(X)
         return X, Y, Z
-        
+    
+
+    def get_fun_point_colours(self, selected_funny):
+        if selected_funny == "rainbow":
+            colours = np.array(["red", "yellow", "green", "cyan", "blue", "magenta"], dtype=object)
+            num_slices = 7
+            
+            XS, YS = self._param_data[5:7]
+            COLOURS = np.empty(XS.shape, dtype=object)
+            slices = np.linspace(-self.object_size, self.object_size, num=num_slices + 1)
+
+            for cut_i in range(len(slices) - 1):
+                mask = (XS >= slices[cut_i]) & (XS <= slices[cut_i + 1])
+                COLOURS[mask] = colours[cut_i % len(colours)]
+            return COLOURS.flatten()
+        else:
+            raise ValueError(f"Selected funny is not funny: {selected_funny}")
 
 
 
 class Renderer():
     def __init__(self, screen_width=None, screen_height=None, terminal_correction=0.5, object_size=5, d_object=5, object_type="torus", d_screen=None):
+        self.fun_colour_regions = True    # False: same colour everywhere, no colour regions.
+        self.render_luminance = True    # False: even lighting, no shadows.
+
+
         if object_type == "torus":
             self.object = Torus(object_size, d_object)
         elif object_type == "disk":
@@ -251,26 +360,7 @@ class Renderer():
             self.object = Tetrahedron(object_size, d_object)
         else:
             raise ValueError("Unknown object type")
-
-        self.screen_width = screen_width
-        self.screen_height = screen_height
-        self.fixed_screen_size = (screen_height is not None or screen_width is not None)
-
-        self.terminal_correction = terminal_correction
-
-        self.fit_object_to_fov = (d_screen is None)
-        self.d_screen = d_screen
         
-        self.render_luminance = True   # False: even lighting, no shadows.
-
-        self.update_screen()
-        self.generate_buffers()
-
-        if self.fit_object_to_fov:
-            self.d_screen = self.compute_d_screen()
-
-        self.prev_height = None
-        self.prev_width = None
 
         self.luminance_chars = ".,-~:;=!*#$@"
         self.colours = {
@@ -284,6 +374,26 @@ class Renderer():
             "white":   "\033[37m",
         }
 
+        self.screen_width = screen_width
+        self.screen_height = screen_height
+        self.fixed_screen_size = (screen_height is not None or screen_width is not None)
+
+        self.terminal_correction = terminal_correction
+
+        self.fit_object_to_fov = (d_screen is None)
+        self.d_screen = d_screen
+        
+
+        self.update_screen()
+        self.generate_buffers()
+
+        if self.fit_object_to_fov:
+            self.d_screen = self.compute_d_screen()
+
+        self.prev_height = None
+        self.prev_width = None
+
+
     def calculate_luminance_val(self, normals):
         light_vector = np.array([0, 1, -1]).astype(float)
         light_vector /= np.linalg.norm(light_vector)
@@ -291,7 +401,7 @@ class Renderer():
         luminance_values = np.dot(normals, light_vector)
         luminance_values = np.clip(luminance_values, 0, 1)
         return luminance_values
-    
+
 
     def map_to_char(self, val, chars):
         val = np.clip(val, 0.0, 1.0)
@@ -341,7 +451,7 @@ class Renderer():
         else:
             r_max = obj.object_size
 
-        return max_radius_on_screen * obj.d_object / (r_max*1.3)
+        return max_radius_on_screen * obj.d_object / (r_max*1.4)
 
 
     def draw_object(self, colour):
@@ -365,15 +475,22 @@ class Renderer():
             if 0 <= row < self.screen_height and 0 <= col < self.screen_width:
                 if z < self.z_buffer[row, col]:
                     self.z_buffer[row, col] = z
+
                     if self.render_luminance:
                         point_luminance = self.luminance_values[point_index]
                         point_character = self.map_to_char(point_luminance, self.luminance_chars)
-                        self.frame_buffer[row, col] = self.colours[colour] + point_character + "\033[0m"
+
+                        if self.fun_colour_regions:
+                            point_colour = self.points_colour[point_index]
+                            self.frame_buffer[row, col] = self.colours[point_colour] + point_character + "\033[0m"
+                        else:    
+                            self.frame_buffer[row, col] = self.colours[colour] + point_character + "\033[0m"
                     else:
                         self.frame_buffer[row, col] = "@"
 
         for row in self.frame_buffer:
             print("".join(row))
+
 
         self.frame_buffer[:] = " "
         self.z_buffer[:] = np.inf
@@ -418,6 +535,9 @@ class Renderer():
 
 
         while True:
+            if self.fun_colour_regions:
+                self.points_colour = self.object.get_fun_point_colours(selected_funny="rainbow")
+
             self.update_screen()
             self.draw_object(colour)
 
