@@ -1,6 +1,7 @@
 import os
 import time
 import numpy as np
+import dot_obj_to_points_converter as dot_obj
 
 
 class Object3D:
@@ -9,6 +10,8 @@ class Object3D:
         self.d_object = d_object
         self.points = None
         self.object_type = None
+        self.funny_colour_patterns = set()
+
 
 
     def get_normals(self):
@@ -48,6 +51,7 @@ class Torus(Object3D):
     def __init__(self, object_size, d_object):
         super().__init__(object_size, d_object)
         self.object_type = "torus"
+        self.funny_colour_patterns = {"funny_donut", "rainbow", "lifebuoy", "swedish"}
     
 
     def generate_meshgrid(self, num_u, num_v):
@@ -110,7 +114,33 @@ class Torus(Object3D):
             for cut_i in range(len(pie_cut_angles) - 1):
                 mask = (PH >= pie_cut_angles[cut_i]) & (PH <= pie_cut_angles[cut_i + 1])
                 COLOURS[mask] = colours[cut_i % len(colours)]
-            return COLOURS.flatten()  
+            return COLOURS.flatten()
+
+        elif selected_funny == "swedish":
+            colours = np.array(["yellow", "blue"], dtype=object)
+
+            COLOURS = np.empty(PH.shape, dtype=object)
+
+            pie_cut_angles = np.array(
+                [0, np.pi/12, 
+                 np.pi/2, np.pi/2 + np.pi/12,
+                 np.pi, np.pi + np.pi/12, 
+                 3*np.pi/2, 3*np.pi/2 + np.pi/12,
+                 2*np.pi])
+            
+            for cut_i in range(len(pie_cut_angles) - 1):
+                mask = (PH >= pie_cut_angles[cut_i]) & (PH <= pie_cut_angles[cut_i + 1])
+                COLOURS[mask] = colours[cut_i % len(colours)]
+
+            sandwich_cuts = np.array(
+                [-np.pi/8, 
+                 np.pi/8  
+                ])
+
+            for cut_i in range(len(sandwich_cuts) - 1):
+                mask = (TH >= sandwich_cuts[cut_i]) & (TH <= sandwich_cuts[cut_i + 1])
+                COLOURS[mask] = colours[cut_i % len(colours)]
+            return COLOURS.flatten()    
          
         else:
             raise ValueError(f"Selected funny is not funny: {selected_funny}")
@@ -120,6 +150,7 @@ class Tetrahedron(Object3D):
     def __init__(self, object_size, d_object):
         super().__init__(object_size, d_object)
         self.object_type = "tetrahedron"
+        self.funny_colour_patterns = {"rainbow"}
 
 
     def get_normals(self):
@@ -262,6 +293,8 @@ class Disk(Object3D):
     def __init__(self, object_size, d_object):
         super().__init__(object_size, d_object)
         self.object_type = "disk"
+        self.funny_colour_patterns = {"rainbow"}
+
 
 
     def generate_meshgrid(self, num_u=100, num_v=100):
@@ -305,6 +338,8 @@ class Plane(Object3D):
     def __init__(self, object_size, d_object):
         super().__init__(object_size, d_object)
         self.object_type = "plane"
+        self.funny_colour_patterns = {"rainbow"}
+
     
 
     def generate_meshgrid(self, num_u=100, num_v=100):            
@@ -346,7 +381,6 @@ class Plane(Object3D):
 
 class Renderer():
     def __init__(self, screen_width=None, screen_height=None, terminal_correction=0.5, object_size=5, d_object=5, object_type="torus", d_screen=None):
-        self.fun_colour_regions = True    # False: same colour everywhere, no colour regions.
         self.render_luminance = True    # False: even lighting, no shadows.
 
 
@@ -448,16 +482,25 @@ class Renderer():
             R1 = obj.object_size
             R2 = 2 * R1
             r_max = R2 + R1 # Outer radius
+        elif obj.object_type == "plane":
+            r_max = obj.object_size*1.2
         else:
             r_max = obj.object_size
 
-        return max_radius_on_screen * obj.d_object / (r_max*1.4)
+        return max_radius_on_screen * obj.d_object / (r_max*1.3)
+    
+
+    def resolve_colours(self, colour_appearance):
+        if colour_appearance in self.object.funny_colour_patterns:
+            points_colour = self.object.get_fun_point_colours(colour_appearance)
+            return "funny", points_colour
+        elif colour_appearance in self.colours:
+            return "solid", colour_appearance
+        else:
+            raise ValueError("Unknown colour appearance")
 
 
-    def draw_object(self, colour):
-        if colour not in self.colours:
-            raise ValueError("Unknown colour")
-
+    def draw_object(self):
         for point_index, (x, y, z) in enumerate(self.points):
             obj = self.object
             # Ignore point if it is inside the camera plane
@@ -475,16 +518,16 @@ class Renderer():
             if 0 <= row < self.screen_height and 0 <= col < self.screen_width:
                 if z < self.z_buffer[row, col]:
                     self.z_buffer[row, col] = z
-
                     if self.render_luminance:
                         point_luminance = self.luminance_values[point_index]
                         point_character = self.map_to_char(point_luminance, self.luminance_chars)
 
-                        if self.fun_colour_regions:
-                            point_colour = self.points_colour[point_index]
-                            self.frame_buffer[row, col] = self.colours[point_colour] + point_character + "\033[0m"
-                        else:    
-                            self.frame_buffer[row, col] = self.colours[colour] + point_character + "\033[0m"
+                        if self.colour_mode == "funny":
+                            colour_name = self.points_colour[point_index]
+                        else:
+                            colour_name = self.solid_colour
+                        self.frame_buffer[row, col] = self.colours[colour_name] + point_character + "\033[0m"
+
                     else:
                         self.frame_buffer[row, col] = "@"
 
@@ -522,24 +565,27 @@ class Renderer():
         return (Rz @ Ry @ Rx @ vectors.T).T
 
 
-    def render_animation(self, colour="white"):
+    def render_animation(self, colour_appearance):
         self.points = self.object.generate_meshgrid(num_u=100, num_v=200)
         self.normals = self.object.get_normals()
         self.luminance_values = self.calculate_luminance_val(self.normals)
 
+        # Resolve colour mode.
+        mode, colour_data = self.resolve_colours(colour_appearance)
+        self.colour_mode = mode
+        if mode == "funny":
+            self.points_colour = colour_data
+        else:
+            self.solid_colour = colour_data
 
         # Rotate tetrahedron to nicer starting position.
         if self.object.object_type == "tetrahedron":
             self.points = self.rotate_object(vectors=self.points, x_axis=True, y_axis=True, z_axis=True, angle_increment=np.pi/3)
             self.normals = self.rotate_object(vectors=self.normals, x_axis=True, y_axis=True, z_axis=True, angle_increment=np.pi/3)
 
-
         while True:
-            if self.fun_colour_regions:
-                self.points_colour = self.object.get_fun_point_colours(selected_funny="rainbow")
-
             self.update_screen()
-            self.draw_object(colour)
+            self.draw_object()
 
             # Must rotate both points and normals.
             self.points = self.rotate_object(self.points)
@@ -550,12 +596,17 @@ class Renderer():
             time.sleep(0.01)
 
 
+    def run(self, colour_appearance="white"):
+        try:
+            print("\033[?25l", end="", flush=True)  # hide cursor
+            renderer.render_animation(colour_appearance) # <-- The magic happens here.
+        except KeyboardInterrupt:
+            pass
+        finally:
+            print("\033[?25h", end="", flush=True)  # show cursor
+
+
+
 if __name__ == "__main__":
-    renderer = Renderer(terminal_correction=0.5, object_size=1, object_type="torus")
-    try:
-        print("\033[?25l", end="", flush=True)  # hide cursor
-        renderer.render_animation(colour="green")
-    except KeyboardInterrupt:
-        pass
-    finally:
-        print("\033[?25h", end="", flush=True)  # show cursor
+    renderer = Renderer(terminal_correction=0.5, object_size=0.1, object_type="torus")
+    renderer.run(colour_appearance="swedish")
