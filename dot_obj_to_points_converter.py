@@ -29,5 +29,7 @@ def validated_points(file_name, max_points=10000):
     subsampled_points = subsample_points(all_points, max_points)
     return subsampled_points
 
+
+
 if __name__ == "__main__":
     print(validated_points(file_name="skull.obj"))

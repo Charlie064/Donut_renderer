@@ -6,6 +6,15 @@ import dot_obj_to_points_converter as dot_obj
 
 class Object3D:
     def __init__(self, object_size, d_object):
+        """
+        Initialises 3D object.
+
+        Args:
+            object_size (float):
+                Changes the spacing of the object's points.
+            d_object (float)
+                Changes the distance from the screen to the object.
+        """
         self.object_size = object_size
         self.d_object = d_object
         self.points = None
@@ -15,11 +24,47 @@ class Object3D:
 
 
     def get_normals(self):
+        """
+        Compute surface normals for the object.
+
+        For parametric objects, this delegates to ``generate_normals``.
+        Subclasses may override this method if normals are computed
+        differently (e.g. polyhedral objects).
+
+        Returns:
+            np.ndarray of shape (N, 3):
+                Unit normal vector for each point.
+        """
         X, Y, Z, u, v, _, _ = self._param_data
         return self.generate_normals(X, Y, Z, u, v)
-    
+
 
     def generate_normals(self, X, Y, Z, u, v):
+        """
+        Compute unit surface normals from a parametric surface grid.
+
+        The normals are obtained by:
+        1. Computing partial derivatives with respect to the
+           parametric coordinates ``u`` and ``v``.
+        2. Forming tangent vectors.
+        3. Taking the cross product and normalizing.
+
+        Args:
+            X (np.ndarray of shape (H, W)):
+                X-coordinates of the surface grid.
+            Y (np.ndarray of shape (H, W)):
+                Y-coordinates of the surface grid.
+            Z (np.ndarray of shape (H, W)):
+                Z-coordinates of the surface grid.
+            u (np.ndarray of shape (H,)):
+                Parameter values along the first surface direction.
+            v (np.ndarray of shape (W,)):
+                Parameter values along the second surface direction.
+
+        Returns:
+            np.ndarray of shape (H*W, 3):
+                Flattened array of unit normal vectors for each point.
+        """
         du = u[1] - u[0]
         dv = v[1] - v[0]
 
@@ -47,23 +92,67 @@ class Object3D:
     
 
     def get_fun_point_colours(self):
+        """
+        Return per-point colours for objects with decorative colour patterns.
+
+        Raises:
+            ValueError:
+                If the object does not support funny colour patterns.
+        """
         raise ValueError("Object has no such colour, try a solid colour like 'green'")
 
 
     def object_radius(self, points):
-        center = points.mean(axis=0)
-        distances = np.linalg.norm(points - center, axis=1)
+        """
+        Compute the maximum distance from the object's centroid.
+
+        This is used as an approximate bounding radius when fitting
+        the object into the field of view.
+
+        Args:
+            points (np.ndarray of shape (N, 3)):
+                Object points in 3D space.
+
+        Returns:
+            float:
+                Maximum Euclidean distance from the centroid.
+        """
+        centre = points.mean(axis=0)
+        distances = np.linalg.norm(points - centre, axis=1)
         return distances.max()
+
 
 
 class Torus(Object3D):
     def __init__(self, object_size, d_object):
+        """
+        Initialise a torus object.
+
+        Args:
+            object_size (float):
+                Radius of the torus tube (minor radius).
+            d_object (float):
+                Distance from the camera to the object origin.
+        """
         super().__init__(object_size, d_object)
         self.object_type = "torus"
         self.funny_colour_patterns = {"funny_donut", "rainbow", "lifebuoy", "swedish"}
     
 
     def generate_meshgrid(self, num_u, num_v):
+        """
+        Generate a parametric meshgrid for the torus surface.
+
+        Args:
+            num_u (int):
+                Number of samples along the minor radius.
+            num_v (int):
+                Number of samples along the major radius.
+
+        Returns:
+            np.ndarray of shape (N, 3):
+                Flattened array of torus surface points.
+        """
         thetas = np.linspace(0, 2*np.pi, num_u)
         phis = np.linspace(0, 2*np.pi, num_v)
         TH, PH = np.meshgrid(thetas, phis)
@@ -77,6 +166,19 @@ class Torus(Object3D):
 
 
     def torus_function(self, TH, PH):
+        """
+        Parametric equation of a torus.
+
+        Args:
+            TH (np.ndarray):
+                Angle around the minor radius.
+            PH (np.ndarray):
+                Angle around the major radius.
+
+        Returns:
+            tuple[np.ndarray, np.ndarray, np.ndarray]:
+                X, Y, Z coordinates of the torus.
+        """
         R1 = self.object_size
         R2 = 2 * R1
         X = (R2 + R1*np.cos(TH)) * np.cos(PH)
@@ -86,6 +188,21 @@ class Torus(Object3D):
     
 
     def get_fun_point_colours(self, selected_funny):
+        """
+        Generate per-point colours for decorative torus patterns.
+
+        Args:
+            selected_funny (str):
+                Name of the colour pattern.
+
+        Returns:
+            np.ndarray of shape (N,):
+                Colour name for each point.
+
+        Raises:
+            ValueError:
+                If the selected pattern is not supported.
+        """
         TH, PH = self._param_data[5:7]
 
         if selected_funny == "funny_donut":
@@ -155,18 +272,48 @@ class Torus(Object3D):
             raise ValueError(f"Selected funny is not funny: {selected_funny}")
 
 
+
 class Tetrahedron(Object3D):
     def __init__(self, object_size, d_object):
+        """
+        Initialise a regular tetrahedron object.
+
+        Args:
+            object_size (float):
+                Scaling factor controlling tetrahedron size.
+            d_object (float):
+                Distance from the camera to the object origin.
+        """
         super().__init__(object_size, d_object)
         self.object_type = "tetrahedron"
         self.funny_colour_patterns = {"rainbow"}
 
 
     def get_normals(self):
+        """
+        Compute surface normals for the tetrahedron.
+
+        Normals are assigned per face and shared by all points
+        lying on that face.
+
+        Returns:
+            np.ndarray of shape (N, 3):
+                Unit normal vector for each surface point.
+        """
         return self.tetrahedron_normals(self.points)
 
 
     def generate_meshgrid(self, num_u=None, num_v=None):
+        """
+        Generate surface points for the tetrahedron.
+
+        A volumetric grid is sampled and filtered to retain
+        only points lying on the tetrahedron surface.
+
+        Returns:
+            np.ndarray of shape (N, 3):
+                Tetrahedron surface points.
+        """
         grid_resolution = 152
         xs = np.linspace(-self.object_size, self.object_size, grid_resolution)
         ys = np.linspace(-self.object_size, self.object_size, grid_resolution)
@@ -181,6 +328,17 @@ class Tetrahedron(Object3D):
 
 
     def tetrahedron_function(self, XS, YS, ZS):
+        """
+        Extract tetrahedron surface points from a 3D grid.
+
+        Args:
+            XS, YS, ZS (np.ndarray):
+                Meshgrid coordinates.
+
+        Returns:
+            tuple[np.ndarray, np.ndarray, np.ndarray]:
+                X, Y, Z coordinates of surface points.
+        """
         a, b, c, d = self.tetrahedron_verticies()
 
         P = np.stack([XS.ravel(), YS.ravel(), ZS.ravel()], axis=1)
@@ -195,6 +353,19 @@ class Tetrahedron(Object3D):
         
 
     def points_on_tetrahedron_surface(self, P, a, b, c, d):
+        """
+        Determine which points lie on the tetrahedron surface.
+
+        Args:
+            P (np.ndarray of shape (N, 3)):
+                Candidate points.
+            a, b, c, d (np.ndarray):
+                Tetrahedron vertices.
+
+        Returns:
+            np.ndarray of shape (N,):
+                Boolean mask indicating surface points.
+        """
         margin = 1e-3
         bary = self.barycentric_coordinates(P, a, b, c, d)
 
@@ -205,6 +376,19 @@ class Tetrahedron(Object3D):
 
 
     def barycentric_coordinates(self, P, a, b, c, d):
+        """
+        Compute barycentric coordinates of points in a tetrahedron.
+
+        Args:
+            P (np.ndarray of shape (N, 3)):
+                Points to evaluate.
+            a, b, c, d (np.ndarray):
+                Tetrahedron vertices.
+
+        Returns:
+            np.ndarray of shape (N, 4):
+                Barycentric coordinates (alfa, beta, gamma, delta).
+        """
         M = np.column_stack([a - d, b - d, c - d])
         b = (P - d).T
         solution = np.linalg.solve(M, b).T
@@ -216,6 +400,13 @@ class Tetrahedron(Object3D):
 
 
     def tetrahedron_verticies(self):
+        """
+        Return the scaled vertices of a regular tetrahedron.
+
+        Returns:
+            tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+                Vertices (a, b, c, d).
+        """
         a = np.array([1, 1, 1], dtype=float)
         b = np.array([-1, -1, 1], dtype=float)
         c = np.array([-1, 1, -1], dtype=float)
@@ -225,6 +416,17 @@ class Tetrahedron(Object3D):
 
 
     def tetrahedron_face_normals(self, a, b, c, d):
+        """
+        Compute outward-facing normals for each tetrahedron face.
+
+        Args:
+            a, b, c, d (np.ndarray):
+                Tetrahedron vertices.
+
+        Returns:
+            np.ndarray of shape (4, 3):
+                Unit normal for each face.
+        """
         # This order is used for indexing the normals.
         faces  = np.array([
             [b, c, d],  # opposite a
@@ -256,8 +458,18 @@ class Tetrahedron(Object3D):
 
     def tetrahedron_normals(self, P):
         """
-        Goes through all face normals one at a time, 
-        assign all point that are on the face with the face normal.
+        Assign face normals to tetrahedron surface points.
+
+        Each point receives the normal of the face it lies on,
+        determined via barycentric coordinates.
+
+        Args:
+            P (np.ndarray of shape (N, 3)):
+                Surface points.
+
+        Returns:
+            np.ndarray of shape (N, 3):
+                Normal vectors.
         """
         a, b, c, d = self.tetrahedron_verticies()
         face_normals = self.tetrahedron_face_normals(a, b, c, d)
@@ -277,6 +489,21 @@ class Tetrahedron(Object3D):
     
 
     def get_fun_point_colours(self, selected_funny):
+        """
+        Generate per-face colour patterns for the tetrahedron.
+
+        Args:
+            selected_funny (str):
+                Colour pattern name.
+
+        Returns:
+            np.ndarray of shape (N,):
+                Colour for each point.
+
+        Raises:
+            ValueError:
+                If the selected pattern is not supported.
+        """
         if selected_funny == "rainbow":
             P = self.points
             a, b, c, d = self.tetrahedron_verticies()
@@ -298,15 +525,37 @@ class Tetrahedron(Object3D):
             raise ValueError(f"Selected funny is not funny: {selected_funny}")
 
 
+
 class Disk(Object3D):
     def __init__(self, object_size, d_object):
+        """
+        Initialise a flat circular disk.
+
+        Args:
+            object_size (float):
+                Radius of the disk.
+            d_object (float):
+                Distance from the camera to the object origin.
+        """
         super().__init__(object_size, d_object)
         self.object_type = "disk"
         self.funny_colour_patterns = {"rainbow"}
 
 
-
     def generate_meshgrid(self, num_u=100, num_v=100):
+        """
+        Generate a meshgrid for a flat disk in the XY-plane.
+
+        Args:
+            num_u (int):
+                Number of radial samples.
+            num_v (int):
+                Number of angular samples.
+
+        Returns:
+            np.ndarray of shape (N, 3):
+                Disk surface points.
+        """
         radii = np.linspace(0, self.object_size, num_u)
         angles = np.linspace(0, 2*np.pi, num_v)
         R, TH = np.meshgrid(radii, angles)
@@ -319,6 +568,19 @@ class Disk(Object3D):
 
     
     def disk_function(self, R, TH):
+        """
+        Parametric equation of a disk.
+
+        Args:
+            R (np.ndarray):
+                Radii.
+            TH (np.ndarray):
+                Angles.
+
+        Returns:
+            tuple[np.ndarray, np.ndarray, np.ndarray]:
+                X, Y, Z coordinates.
+        """
         X = R * np.cos(TH)
         Y = R * np.sin(TH)
         Z = np.zeros_like(X)  # flat disk in XY plane
@@ -326,6 +588,21 @@ class Disk(Object3D):
     
 
     def get_fun_point_colours(self, selected_funny):
+        """
+        Generate per-point colours for decorative disk patterns.
+
+        Args:
+            selected_funny (str):
+                Name of the colour pattern.
+
+        Returns:
+            np.ndarray of shape (N,):
+                Colour name for each point.
+
+        Raises:
+            ValueError:
+                If the selected pattern is not supported.
+        """
         if selected_funny == "rainbow":
             colours = np.array(["red", "yellow", "green", "cyan", "blue", "magenta"], dtype=object)
             num_slices = 10
@@ -345,13 +622,34 @@ class Disk(Object3D):
 
 class Plane(Object3D):
     def __init__(self, object_size, d_object):
+        """
+        Initialise a rectangular plane in the XY-plane.
+
+        Args:
+            object_size (float):
+                Half-width and half-height of the plane.
+            d_object (float):
+                Distance from the camera to the object origin.
+        """
         super().__init__(object_size, d_object)
         self.object_type = "plane"
         self.funny_colour_patterns = {"rainbow"}
 
     
+    def generate_meshgrid(self, num_u=100, num_v=100): 
+        """
+        Generate a rectangular plane in the XY-plane.
 
-    def generate_meshgrid(self, num_u=100, num_v=100):            
+        Args:
+            num_u (int):
+                Number of samples along X.
+            num_v (int):
+                Number of samples along Y.
+
+        Returns:
+            np.ndarray of shape (N, 3):
+                Plane points.
+        """           
         xs = np.linspace(-self.object_size, self.object_size, num_u)
         ys = np.linspace(-self.object_size, self.object_size, num_v)
         XS, YS = np.meshgrid(xs, ys)
@@ -364,6 +662,17 @@ class Plane(Object3D):
     
 
     def plane_function(self, XS, YS):
+        """
+        Define a flat plane in the XY-plane.
+
+        Args:
+            XS, YS (np.ndarray):
+                Meshgrid coordinates.
+
+        Returns:
+            tuple[np.ndarray, np.ndarray, np.ndarray]:
+                X, Y, Z coordinates.
+        """
         X = XS
         Y = YS
         Z = np.zeros_like(X)
@@ -371,6 +680,21 @@ class Plane(Object3D):
     
 
     def get_fun_point_colours(self, selected_funny):
+        """
+        Generate per-point colours for decorative disk patterns.
+
+        Args:
+            selected_funny (str):
+                Name of the colour pattern.
+
+        Returns:
+            np.ndarray of shape (N,):
+                Colour name for each point.
+
+        Raises:
+            ValueError:
+                If the selected pattern is not supported.
+        """
         if selected_funny == "rainbow":
             colours = np.array(["red", "yellow", "green", "cyan", "blue", "magenta"], dtype=object)
             num_slices = 7
@@ -387,27 +711,51 @@ class Plane(Object3D):
             raise ValueError(f"Selected funny is not funny: {selected_funny}")
 
 
+
 class ImportedObject(Object3D):
     def __init__(self, object_size, d_object):
+        """
+        Initialise an imported 3D object loaded from an OBJ file.
+
+        Args:
+            object_size (float):
+                Currently unused scaling parameter reserved for
+                future resizing of imported geometry.
+            d_object (float):
+                Distance from the camera to the object origin.
+        """
         super().__init__(object_size, d_object)
         self.object_type = "imported"
 
 
+    def generate_meshgrid(self, num_u=100, num_v=100):   
+        """
+        Load and preprocess an imported OBJ object.
 
-    def generate_meshgrid(self, num_u=100, num_v=100):            
+        Returns:
+            np.ndarray of shape (N, 3):
+                Imported object points.
+        """         
         self.points = dot_obj.validated_points(file_name="skull.obj", max_points = 10000)
         
-        # Center object to origin
-        self.center_object = True
-        if self.center_object: 
+        # centre object to origin
+        self.centre_object = True
+        if self.centre_object: 
             self.move_to_origin() 
 
         return self.points
     
 
     def get_normals(self):
-        self.center = self.points.mean(axis=0)
-        normals = self.points - self.center
+        """
+        Approximate normals using radial vectors from the centroid.
+
+        Returns:
+            np.ndarray of shape (N, 3):
+                Normalized normal vectors.
+        """
+        self.centre = self.points.mean(axis=0)
+        normals = self.points - self.centre
 
         norms = np.linalg.norm(normals, axis=1, keepdims=True)
         norms[norms == 0] = 1.0
@@ -417,13 +765,47 @@ class ImportedObject(Object3D):
     
 
     def move_to_origin(self):
-        old_center = self.points.mean(axis=0)
-        self.points = self.points - old_center
+        """
+        Move the object so its centroid lies at the origin.
+        """
+        old_centre = self.points.mean(axis=0)
+        self.points = self.points - old_centre
     
 
 
 class Renderer():
-    def __init__(self, screen_width=None, screen_height=None, terminal_correction=0.5, object_size=5, d_object=5, object_type="torus", d_screen=None):
+    def __init__(
+        self, 
+        screen_width=None, 
+        screen_height=None, 
+        terminal_correction=0.5, 
+        object_size=5, d_object=5, 
+        object_type="torus", 
+        d_screen=None):
+        """
+        Initialise the ASCII terminal 3D renderer and selected object.
+
+        Args:
+            screen_width (int | None):
+                Fixed screen width in characters. If None, the terminal
+                width is detected dynamically.
+            screen_height (int | None):
+                Fixed screen height in characters. If None, the terminal
+                height is detected dynamically.
+            terminal_correction (float):
+                Vertical scaling factor compensating for non-square
+                terminal character dimensions.
+            object_size (float):
+                Characteristic size of the rendered object.
+            d_object (float):
+                Distance from the camera to the object origin.
+            object_type (str):
+                Type of object to render ("torus", "disk", "plane",
+                "tetrahedron", or "imported").
+            d_screen (float | None):
+                Distance from camera to projection screen. If None,
+                it is computed automatically to fit the object.
+        """
         self.render_luminance = True    # False: even lighting, no shadows.
 
 
@@ -474,6 +856,17 @@ class Renderer():
 
 
     def calculate_luminance_val(self, normals):
+        """
+        Compute diffuse lighting values using a fixed light direction.
+
+        Args:
+            normals (np.ndarray of shape (N, 3)):
+                Unit surface normals.
+
+        Returns:
+            np.ndarray of shape (N,):
+                Luminance values in [0, 1].
+        """
         light_vector = np.array([0, 1, -1]).astype(float)
         light_vector /= np.linalg.norm(light_vector)
 
@@ -483,6 +876,20 @@ class Renderer():
 
 
     def map_to_char(self, val, chars):
+        """
+        Map a normalized luminance value to an ASCII character.
+
+        Args:
+            val (float):
+                Luminance value expected in the range [0, 1].
+                Values outside the range are clipped.
+            chars (str):
+                Ordered string of characters from darkest to brightest.
+
+        Returns:
+            str:
+                Single character representing the luminance level.
+        """
         val = np.clip(val, 0.0, 1.0)
         idx = int(val * (len(chars)))
         idx = min(idx, len(chars) - 1)
@@ -490,6 +897,9 @@ class Renderer():
 
 
     def generate_buffers(self):
+        """
+        Initialise the frame buffer and depth buffer.
+        """
         # Empty screen
         self.frame_buffer = np.full((self.screen_height, self.screen_width), fill_value=" ", dtype=object)
         # Fill depth buffer with infinity so that all points are closer and are accepted, and with the overlap counter.
@@ -497,6 +907,9 @@ class Renderer():
 
 
     def update_screen(self):
+        """
+        Update screen dimensions and buffers if terminal size changes.
+        """
         print("\033[H", end="", flush=True) # Cursor to home
         if not self.fixed_screen_size:
             terminal_dimensions = os.get_terminal_size()
@@ -513,6 +926,13 @@ class Renderer():
 
 
     def compute_d_screen(self):
+        """
+        Compute the optimal screen distance to fit the object in view.
+
+        Returns:
+            float:
+                Screen distance.
+        """
         # Compute screen distance to fit object in view
         half_w = self.screen_width / 2
         half_h = (self.screen_height / 2) / self.terminal_correction
@@ -539,6 +959,17 @@ class Renderer():
     
 
     def resolve_colours(self, colour_appearance):
+        """
+        Resolve colour mode and colour data.
+
+        Args:
+            colour_appearance (str):
+                Colour mode or pattern name.
+
+        Returns:
+            tuple[str, Any]:
+                Colour mode and colour data.
+        """
         if colour_appearance in self.object.funny_colour_patterns:
             points_colour = self.object.get_fun_point_colours(colour_appearance)
             return "funny", points_colour
@@ -549,6 +980,9 @@ class Renderer():
 
 
     def draw_object(self):
+        """
+        Project, depth-test, shade, and render the object to the terminal.
+        """
         for point_index, (x, y, z) in enumerate(self.points):
             obj = self.object
             # Ignore point if it is inside the camera plane
@@ -588,7 +1022,21 @@ class Renderer():
 
 
     def rotate_object(self, vectors, x_axis=True, y_axis=True, z_axis=True, angle_increment = np.pi/40):
+        """
+        Rotate vectors around selected coordinate axes.
 
+        Args:
+            vectors (np.ndarray of shape (N, 3)):
+                Vectors to rotate.
+            x_axis, y_axis, z_axis (bool):
+                Whether to rotate around each axis.
+            angle_increment (float):
+                Rotation angle in radians.
+
+        Returns:
+            np.ndarray of shape (N, 3):
+                Rotated vectors.
+        """
         # Set angular velocity
         ax = angle_increment if x_axis else 0
         ay = angle_increment if y_axis else 0
@@ -614,6 +1062,13 @@ class Renderer():
 
 
     def render_animation(self, colour_appearance):
+        """
+        Run the main rendering loop and animate the object.
+
+        Args:
+            colour_appearance (str):
+                Colour mode or pattern.
+        """
         self.points = self.object.generate_meshgrid(num_u=100, num_v=200)
         self.normals = self.object.get_normals()
         self.luminance_values = self.calculate_luminance_val(self.normals)
@@ -645,6 +1100,13 @@ class Renderer():
 
 
     def run(self, colour_appearance="white"):
+        """
+        Start the renderer and handle graceful shutdown.
+
+        Args:
+            colour_appearance (str):
+                Colour mode or pattern.
+        """
         try:
             print("\033[?25l", end="", flush=True)  # hide cursor
             renderer.render_animation(colour_appearance) # <-- The magic happens here.
@@ -656,5 +1118,5 @@ class Renderer():
 
 
 if __name__ == "__main__":
-    renderer = Renderer(terminal_correction=0.5, object_size=0.001, object_type="imported")
-    renderer.run(colour_appearance="green")
+    renderer = Renderer(terminal_correction=0.5, object_size=0.1, object_type="disk")
+    renderer.run(colour_appearance="rainbow")
