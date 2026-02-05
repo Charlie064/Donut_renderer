@@ -44,7 +44,16 @@ class Object3D:
         normals /= norms
 
         return normals
+    
 
+    def get_fun_point_colours(self):
+        raise ValueError("Object has no such colour, try a solid colour like 'green'")
+
+
+    def object_radius(self, points):
+        center = points.mean(axis=0)
+        distances = np.linalg.norm(points - center, axis=1)
+        return distances.max()
 
 
 class Torus(Object3D):
@@ -378,6 +387,40 @@ class Plane(Object3D):
             raise ValueError(f"Selected funny is not funny: {selected_funny}")
 
 
+class ImportedObject(Object3D):
+    def __init__(self, object_size, d_object):
+        super().__init__(object_size, d_object)
+        self.object_type = "imported"
+
+
+
+    def generate_meshgrid(self, num_u=100, num_v=100):            
+        self.points = dot_obj.validated_points(file_name="skull.obj", max_points = 10000)
+        
+        # Center object to origin
+        self.center_object = True
+        if self.center_object: 
+            self.move_to_origin() 
+
+        return self.points
+    
+
+    def get_normals(self):
+        self.center = self.points.mean(axis=0)
+        normals = self.points - self.center
+
+        norms = np.linalg.norm(normals, axis=1, keepdims=True)
+        norms[norms == 0] = 1.0
+        normals /= norms
+
+        return normals
+    
+
+    def move_to_origin(self):
+        old_center = self.points.mean(axis=0)
+        self.points = self.points - old_center
+    
+
 
 class Renderer():
     def __init__(self, screen_width=None, screen_height=None, terminal_correction=0.5, object_size=5, d_object=5, object_type="torus", d_screen=None):
@@ -392,6 +435,8 @@ class Renderer():
             self.object = Plane(object_size, d_object)
         elif object_type == "tetrahedron":
             self.object = Tetrahedron(object_size, d_object)
+        elif object_type == "imported":
+            self.object = ImportedObject(object_size, d_object)
         else:
             raise ValueError("Unknown object type")
         
@@ -484,6 +529,9 @@ class Renderer():
             r_max = R2 + R1 # Outer radius
         elif obj.object_type == "plane":
             r_max = obj.object_size*1.2
+        elif obj.object_type == "imported":
+            points = obj.generate_meshgrid()
+            r_max = obj.object_radius(points)
         else:
             r_max = obj.object_size
 
@@ -580,8 +628,8 @@ class Renderer():
 
         # Rotate tetrahedron to nicer starting position.
         if self.object.object_type == "tetrahedron":
-            self.points = self.rotate_object(vectors=self.points, x_axis=True, y_axis=True, z_axis=True, angle_increment=np.pi/3)
-            self.normals = self.rotate_object(vectors=self.normals, x_axis=True, y_axis=True, z_axis=True, angle_increment=np.pi/3)
+            self.points = self.rotate_object(vectors=self.points, x_axis=True, y_axis=True, z_axis=False, angle_increment=np.pi/3)
+            self.normals = self.rotate_object(vectors=self.normals, x_axis=True, y_axis=True, z_axis=False, angle_increment=np.pi/3)
 
         while True:
             self.update_screen()
@@ -608,5 +656,5 @@ class Renderer():
 
 
 if __name__ == "__main__":
-    renderer = Renderer(terminal_correction=0.5, object_size=0.1, object_type="torus")
-    renderer.run(colour_appearance="swedish")
+    renderer = Renderer(terminal_correction=0.5, object_size=0.001, object_type="imported")
+    renderer.run(colour_appearance="green")
