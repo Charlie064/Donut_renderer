@@ -139,7 +139,7 @@ class Torus(Object3D):
         self.funny_colour_patterns = {"funny_donut", "rainbow", "lifebuoy", "swedish"}
     
 
-    def generate_meshgrid(self, num_u, num_v):
+    def generate_points(self, num_u, num_v):
         """
         Generate a parametric meshgrid for the torus surface.
 
@@ -303,7 +303,7 @@ class Tetrahedron(Object3D):
         return self.tetrahedron_normals(self.points)
 
 
-    def generate_meshgrid(self, num_u=None, num_v=None):
+    def generate_points(self, num_u=None, num_v=None):
         """
         Generate surface points for the tetrahedron.
 
@@ -339,7 +339,7 @@ class Tetrahedron(Object3D):
             tuple[np.ndarray, np.ndarray, np.ndarray]:
                 X, Y, Z coordinates of surface points.
         """
-        a, b, c, d = self.tetrahedron_verticies()
+        a, b, c, d = self.tetrahedron_vertices()
 
         P = np.stack([XS.ravel(), YS.ravel(), ZS.ravel()], axis=1)
 
@@ -399,7 +399,7 @@ class Tetrahedron(Object3D):
         return np.stack([ALPHAS, BETAS, GAMMAS, DELTAS], axis=1)    
 
 
-    def tetrahedron_verticies(self):
+    def tetrahedron_vertices(self):
         """
         Return the scaled vertices of a regular tetrahedron.
 
@@ -471,7 +471,7 @@ class Tetrahedron(Object3D):
             np.ndarray of shape (N, 3):
                 Normal vectors.
         """
-        a, b, c, d = self.tetrahedron_verticies()
+        a, b, c, d = self.tetrahedron_vertices()
         face_normals = self.tetrahedron_face_normals(a, b, c, d)
 
         bary = self.barycentric_coordinates(P, a, b, c, d)
@@ -506,7 +506,7 @@ class Tetrahedron(Object3D):
         """
         if selected_funny == "rainbow":
             P = self.points
-            a, b, c, d = self.tetrahedron_verticies()
+            a, b, c, d = self.tetrahedron_vertices()
             face_colours = np.array(["magenta", "green", "cyan", "red"])
 
             bary = self.barycentric_coordinates(P, a, b, c, d)
@@ -526,6 +526,168 @@ class Tetrahedron(Object3D):
 
 
 
+class Icosahedron(Object3D):
+    def __init__(self, object_size, d_object):
+        super().__init__(object_size, d_object)
+        self.object_type = "icosahedron"
+        self.funny_colour_patterns = {"rainbow"}
+
+        self.points = None
+        self.normals = None
+
+
+    def get_normals(self):
+        if self.normals is None:
+            self.normals = self.compute_normals()
+        return self.normals
+
+
+    def generate_points(self, num_u=50, num_v=50):
+        triangles = self.icosahedron_triangles()
+        all_points = []
+        for tri in triangles:
+            a, b, c = tri
+            points = self.sample_triangle(a, b, c, max(num_u, num_v))
+            all_points.append(points)
+        self.points = np.vstack(all_points)
+        self.faces = triangles
+        return self.points
+    
+    
+    def sample_triangle(self, a, b, c, n):
+        """
+        Vectorized sampling of a triangle using barycentric coordinates.
+
+        Args:
+            a, b, c (np.ndarray): Triangle vertices
+            n (int): Number of divisions along edges
+
+        Returns:
+            np.ndarray of shape (num_points, 3)
+        """
+        i = np.arange(n + 1)
+        j = np.arange(n + 1)
+        ii, jj = np.meshgrid(i, j)
+        
+        # Only pick points where gamma >= 0 (1 − i/n − j/n >= 0)
+        mask = ii + jj <= n     
+
+        alpha = ii[mask] / n
+        beta  = jj[mask] / n
+        gamma = 1 - alpha - beta
+
+        points = np.stack([
+            alpha*a[0] + beta*b[0] + gamma*c[0],
+            alpha*a[1] + beta*b[1] + gamma*c[1],
+            alpha*a[2] + beta*b[2] + gamma*c[2]], axis=1)
+
+        return points
+
+
+
+    def icosahedron_vertices(self):
+        phi = (1 + np.sqrt(5)) / 2
+
+        vertices = np.array([
+            [0, 1, phi], [0, 1, -phi], [0, -1, phi], [0, -1, -phi],
+            [1, phi, 0], [1, -phi, 0], [-1, phi, 0], [-1, -phi, 0],
+            [phi, 0, 1], [-phi, 0, 1], [phi, 0, -1], [-phi, 0, -1],
+        ], dtype=float)
+
+        # Normalize to object_size
+        norm = np.linalg.norm(vertices[0])
+        vertices = vertices * (self.object_size / norm)
+
+        return vertices
+
+
+    def icosahedron_vertices_connections(self):
+        """
+        Each row = indices of a triangle in the vertex list.
+        Standard icosahedron connectivity.
+        """
+        return np.array([
+            [0, 2, 8], [0, 8, 4], [0, 4, 6], [0, 6, 9], [0, 9, 2],
+            [3, 1, 10], [3, 10, 5], [3, 5, 7], [3, 7, 11], [3, 11, 1],
+            [1, 6, 4], [1, 4, 10], [10, 4, 8], [10, 8, 5], [5, 8, 2],
+            [5, 2, 7], [7, 2, 9], [7, 9, 11], [11, 9, 6], [11, 6, 1],
+        ], dtype=int)
+    
+
+    def icosahedron_triangles(self):
+        vertices = self.icosahedron_vertices()
+        connections = self.icosahedron_vertices_connections()
+
+        triangles = []
+        for i0, i1, i2 in connections:
+            triangle = np.array([vertices[i0], vertices[i1], vertices[i2]])
+            triangles.append(triangle)
+            
+        return np.array(triangles)
+    
+
+    def icosahedron_face_normals(self):
+        normals = []
+        for tri in self.faces:
+            a, b, c = tri
+            n = np.cross(b - a, c - a)
+            n /= np.linalg.norm(n)
+            normals.append(n)
+        return np.array(normals)
+    
+
+    def compute_normals(self):
+        all_normals = []
+        n_per_triangle = int(len(self.points) / len(self.faces))  # compute from generated points
+        for idx, tri in enumerate(self.faces):
+            a, b, c = tri
+            n = np.cross(b - a, c - a)
+            n /= np.linalg.norm(n)
+            all_normals.append(np.tile(n, (n_per_triangle, 1)))
+        return np.vstack(all_normals)
+
+
+
+    def get_fun_point_colours(self, selected_funny):
+        """
+        Generate per-point colours for decorative icosahedron patterns.
+
+        Args:
+            selected_funny (str):
+                Colour pattern name.
+
+        Returns:
+            np.ndarray of shape (N,):
+                Colour for each point.
+
+        Raises:
+            ValueError:
+                If the selected pattern is not supported.
+        """
+        if selected_funny != "rainbow":
+            raise ValueError(f"Selected funny is not funny: {selected_funny}")
+
+        colours = ["red", "yellow", "green", "cyan", "blue", "magenta"]
+        n_faces = len(self.faces)
+        n_points = len(self.points)
+        
+        # Determine approximate number of points per face
+        n_per_face = n_points // n_faces
+
+        points_colours = np.empty(n_points, dtype=object)
+
+        for idx, _ in enumerate(self.faces):
+            start = idx * n_per_face
+            end = start + n_per_face
+            if idx == n_faces - 1:
+                end = n_points  # Include any leftover points in last face
+            points_colours[start:end] = colours[idx % len(colours)]
+
+        return points_colours
+        
+
+
+
 class Disk(Object3D):
     def __init__(self, object_size, d_object):
         """
@@ -542,7 +704,7 @@ class Disk(Object3D):
         self.funny_colour_patterns = {"rainbow"}
 
 
-    def generate_meshgrid(self, num_u=100, num_v=100):
+    def generate_points(self, num_u=100, num_v=100):
         """
         Generate a meshgrid for a flat disk in the XY-plane.
 
@@ -636,7 +798,7 @@ class Plane(Object3D):
         self.funny_colour_patterns = {"rainbow"}
 
     
-    def generate_meshgrid(self, num_u=100, num_v=100): 
+    def generate_points(self, num_u=100, num_v=100): 
         """
         Generate a rectangular plane in the XY-plane.
 
@@ -681,7 +843,7 @@ class Plane(Object3D):
 
     def get_fun_point_colours(self, selected_funny):
         """
-        Generate per-point colours for decorative disk patterns.
+        Generate per-point colours for decorative plane patterns.
 
         Args:
             selected_funny (str):
@@ -728,7 +890,7 @@ class ImportedObject(Object3D):
         self.object_type = "imported"
 
 
-    def generate_meshgrid(self, num_u=100, num_v=100):   
+    def generate_points(self, num_u=100, num_v=100):   
         """
         Load and preprocess an imported OBJ object.
 
@@ -801,7 +963,7 @@ class Renderer():
                 Distance from the camera to the object origin.
             object_type (str):
                 Type of object to render ("torus", "disk", "plane",
-                "tetrahedron", or "imported").
+                "tetrahedron", "icosahedron", or "imported").
             d_screen (float | None):
                 Distance from camera to projection screen. If None,
                 it is computed automatically to fit the object.
@@ -817,6 +979,8 @@ class Renderer():
             self.object = Plane(object_size, d_object)
         elif object_type == "tetrahedron":
             self.object = Tetrahedron(object_size, d_object)
+        elif object_type == "icosahedron":
+            self.object = Icosahedron(object_size, d_object)
         elif object_type == "imported":
             self.object = ImportedObject(object_size, d_object)
         else:
@@ -950,7 +1114,7 @@ class Renderer():
         elif obj.object_type == "plane":
             r_max = obj.object_size*1.2
         elif obj.object_type == "imported":
-            points = obj.generate_meshgrid()
+            points = obj.generate_points()
             r_max = obj.object_radius(points)
         else:
             r_max = obj.object_size
@@ -1069,7 +1233,10 @@ class Renderer():
             colour_appearance (str):
                 Colour mode or pattern.
         """
-        self.points = self.object.generate_meshgrid(num_u=100, num_v=200)
+        if self.object.object_type == "icosahedron":
+            self.points = self.object.generate_points(num_u=50, num_v=50)
+        else:
+            self.points = self.object.generate_points(num_u=100, num_v=5)
         self.normals = self.object.get_normals()
         self.luminance_values = self.calculate_luminance_val(self.normals)
 
@@ -1085,6 +1252,12 @@ class Renderer():
         if self.object.object_type == "tetrahedron":
             self.points = self.rotate_object(vectors=self.points, x_axis=True, y_axis=True, z_axis=False, angle_increment=np.pi/3)
             self.normals = self.rotate_object(vectors=self.normals, x_axis=True, y_axis=True, z_axis=False, angle_increment=np.pi/3)
+
+        # Rotate imported object to nicer starting position.
+        elif self.object.object_type == "imported":
+            self.points = self.rotate_object(vectors=self.points, x_axis=True, y_axis=True, z_axis=False, angle_increment=np.pi/2)
+            self.normals = self.rotate_object(vectors=self.normals, x_axis=True, y_axis=True, z_axis=False, angle_increment=np.pi/3)
+
 
         while True:
             self.update_screen()
@@ -1118,5 +1291,5 @@ class Renderer():
 
 
 if __name__ == "__main__":
-    renderer = Renderer(terminal_correction=0.5, object_size=0.1, object_type="disk")
-    renderer.run(colour_appearance="rainbow")
+    renderer = Renderer(terminal_correction=0.5, object_size=0.1, object_type="imported")
+    renderer.run(colour_appearance="green")
